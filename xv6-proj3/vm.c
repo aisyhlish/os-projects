@@ -7,6 +7,9 @@
 #include "proc.h"
 #include "elf.h"
 
+#define MAX_PHYS_PAGES 4096
+int refcount[MAX_PHYS_PAGES];
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
@@ -318,7 +321,7 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
+  
 
   if((d = setupkvm()) == 0)
     return 0;
@@ -329,19 +332,21 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
+
+    *pte &= ~PTE_W;
+
+     inc_refcount(pa);
+
+     if(mappages(d, (void*)i, PGSIZE, pa, flags & ~PTE_W) < 0) {
+           freevm(d);
+	   return 0;
     }
   }
+
+  lcr3(V2P(pgdir));
+
   return d;
 
-bad:
-  freevm(d);
-  return 0;
 }
 
 //PAGEBREAK!
@@ -389,13 +394,41 @@ void
 page_fault(void)
 {
   uint va = rcr2();
-  if(va < 0) {
-    panic("Invalid access");
+  struct proc *p = myproc();
+  pde_t *pgdir = p->pgdir;
+  pte_t *pte = walkpgdir(pgdir, (void*)va, 0);
+
+  if(pte == 0 || (*pte & PTE_P) == 0){
+    // invalid page fault
+    p->killed = 1;
     return;
-  }
-  
-  return;
 }
+
+uint pa = PTE_ADDR(*pte);
+int ref = get_refcount(pa);
+
+
+if(ref > 1){
+    char *mem = kalloc();
+    if(mem == 0){
+        p->killed = 1;
+        return;
+    }
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+    dec_refcount(pa);
+    *pte = V2P(mem) | PTE_P | PTE_U | PTE_W;
+    refcount[V2P(mem) / PGSIZE] = 1;
+}else if(ref == 1){
+    *pte |= PTE_W;
+}
+
+   lcr3(V2P(pgdir));
+ 
+}
+
+
+
+
 
 //PAGEBREAK!
 // Blank page.

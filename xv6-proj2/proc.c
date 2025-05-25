@@ -7,12 +7,23 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
+
+
+
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
 } ptable;
 
 static struct proc *initproc;
+struct proc* dequeue(void);
+static struct proc* ready_queue = 0;
+
+
+void enqueue(struct proc* p);
+
 
 int nextpid = 1;
 extern void forkret(void);
@@ -150,8 +161,9 @@ userinit(void)
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
 
-  p->state = RUNNABLE;
-
+  p->state = RUNNABLE; //runnable mean a process ready to execut
+		       //ed when there is available resources.
+  enqueue(p);   /// We add enqueue mena sa process is added back                ////to ready queue after it can be run  
   release(&ptable.lock);
 }
 
@@ -202,6 +214,12 @@ fork(void)
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
+  if (curproc->priority >= 15) //here is when a child process cr                                //created, the priority will be
+			       //like this
+	  np->priority = curproc ->priority / 2;
+  else
+	  np->priority = curproc ->priority + 1;
+
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
@@ -217,7 +235,8 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
+  enqueue(np);
+ 
   release(&ptable.lock);
 
   return pid;
@@ -324,19 +343,22 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;
+  
+  
+
   struct cpu *c = mycpu();
   c->proc = 0;
   
   for(;;){
     // Enable interrupts on this processor.
     sti();
+       
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+    struct proc *p = dequeue();
+    
+        if (p && p->state == RUNNABLE) {
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -386,9 +408,11 @@ sched(void)
 // Give up the CPU for one scheduling round.
 void
 yield(void)
-{
+{ 
+  myproc();
   acquire(&ptable.lock);  //DOC: yieldlock
   myproc()->state = RUNNABLE;
+  enqueue(myproc());
   sched();
   release(&ptable.lock);
 }
@@ -462,8 +486,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      enqueue(p);  
+    }  
 }
 
 // Wake up all processes sleeping on chan.
@@ -488,8 +514,10 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING){
         p->state = RUNNABLE;
+        enqueue(p);
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -554,3 +582,46 @@ setnice(int pid, int nice)
   release(&ptable.lock);
   return -1;
 }
+
+
+
+
+///since we cant directly use a proc table,
+//we use linked list to manage process in ready queue efficiently ,and easy sorted
+
+
+void enqueue(struct proc* p) {
+    p->next = 0;
+    if (!ready_queue || p->priority < ready_queue->priority ||
+        (p->priority == ready_queue->priority && p->pid > ready_queue->pid)) {
+        p->next = ready_queue;
+        ready_queue = p;
+        return;
+    }
+
+    struct proc* curr = ready_queue;
+    while (curr->next &&
+        (curr->next->priority < p->priority ||
+        (curr->next->priority == p->priority && curr->next->pid < p->pid))) {
+        curr = curr->next;
+    }
+
+    p->next = curr->next;
+    curr->next = p;
+}
+
+struct proc* dequeue() {
+    if (!ready_queue)
+        return 0;
+
+    struct proc* p = ready_queue;
+    ready_queue = ready_queue->next;
+    p->next = 0;
+    return p;
+}
+
+
+
+
+
+

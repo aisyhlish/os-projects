@@ -25,7 +25,7 @@ struct {
 
 struct {
   int num_free_pages;
-  uint refcount[PHYSTOP >> PGSHIFT];
+  uint refcount[PHYSTOP >> PGSHIFT]; //this is to track how many processes sharing each pa
 } pmem;
 
 // Initialization happens in two phases.
@@ -67,9 +67,16 @@ void
 kfree(char *v)
 {
   struct run *r;
+  uint pa;
 
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
+
+  pa = V2P(v);  //to change va to pa
+  dec_refcount(pa); //decrement the ref count 
+
+  if(get_refcount(pa) > 0) //here means, ifother process is still using we dont free it 
+	  return;
 
   // Fill with junk to catch dangling refs.
   memset(v, 1, PGSIZE);
@@ -97,14 +104,24 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
     kmem.freelist = r->next;
-
-  pmem.num_free_pages--;
+     pmem.num_free_pages--; 
+  }
 
   if(kmem.use_lock)
     release(&kmem.lock);
-  return (char*)r;
+  
+  char *mem = (char*)r; //ni ubah
+
+  if(mem){ 
+	  memset(mem,1,PGSIZE); //for debugging
+	  inc_refcount(V2P(mem)); //to startsja track kalau new page allocated
+	  
+  }
+
+  return mem;
+  
 }
 
 int
@@ -116,17 +133,18 @@ freemem(void)
 uint
 get_refcount(uint pa)
 {
-  return 0;
+  return pmem.refcount[pa >> PGSHIFT ];
 }
 
 void
 inc_refcount(uint pa)
 {
-  return;
+  pmem.refcount[pa >> PGSHIFT]++;
 }
 
 void  
 dec_refcount(uint pa)
 {
-  return;
+  if (pmem.refcount[pa >> PGSHIFT] > 0)
+	  pmem.refcount [pa >> PGSHIFT ]--;
 }
